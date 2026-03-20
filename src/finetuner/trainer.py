@@ -1,4 +1,5 @@
 """微调管理器 - 调用Xtuner执行微调"""
+
 import os
 import subprocess
 import yaml
@@ -7,11 +8,17 @@ from pathlib import Path
 from typing import Optional, List
 import shutil
 
+os.environ["HF_ENDPOINT"] = "https://modelscope.cn"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
+
 @dataclass
 class FinetuneConfig:
     """微调配置"""
+
     model_name: str = "Qwen2.5-0.5B"
-    data_path: str = "./data/train.jsonl"
+    model_path: str = None
+    data_path: str = "./output/temp/train.jsonl"
     output_dir: str = "./output"
     max_length: int = 2048
     batch_size: int = 1
@@ -37,6 +44,7 @@ class FinetuneConfig:
             "save_steps": self.save_steps,
             "eval_steps": self.eval_steps,
         }
+
 
 class Finetuner:
     """微调管理器"""
@@ -67,7 +75,7 @@ class Finetuner:
         if not data_path.exists():
             raise FileNotFoundError(f"训练数据不存在: {data_path}")
 
-        work_dir = Path(self.config.output_dir) / "data"
+        work_dir = Path("output/temp/data")
         work_dir.mkdir(parents=True, exist_ok=True)
 
         shutil.copy(data_path, work_dir / "train.jsonl")
@@ -78,7 +86,9 @@ class Finetuner:
     def train(self):
         """执行微调训练"""
         print(f"开始微调: {self.config.model_name}")
-        print(f"训练参数: batch_size={self.config.batch_size}, lr={self.config.learning_rate}, epochs={self.config.num_epochs}")
+        print(
+            f"训练参数: batch_size={self.config.batch_size}, lr={self.config.learning_rate}, epochs={self.config.num_epochs}"
+        )
 
         if self.use_xtuner:
             self._train_with_xtuner()
@@ -90,27 +100,44 @@ class Finetuner:
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        train_script = output_dir / "train.py"
+        train_script = output_dir / "temp" / "train.py"
+        train_script.parent.mkdir(parents=True, exist_ok=True)
         self._generate_train_script(train_script)
 
+        cmd = [
+            "python",
+            str(train_script),
+            "--model_name",
+            self.config.model_name,
+            "--data_path",
+            self.config.data_path,
+            "--output_dir",
+            self.config.output_dir,
+            "--num_epochs",
+            str(self.config.num_epochs),
+            "--batch_size",
+            str(self.config.batch_size),
+            "--learning_rate",
+            str(self.config.learning_rate),
+            "--max_length",
+            str(self.config.max_length),
+        ]
+        if self.config.model_path:
+            cmd.extend(["--model_path", self.config.model_path])
         print(f"运行训练脚本: {train_script}")
-        subprocess.run([
-            "python", str(train_script),
-            "--model_name", self.config.model_name,
-            "--data_path", self.config.data_path,
-            "--output_dir", self.config.output_dir,
-            "--num_epochs", str(self.config.num_epochs),
-            "--batch_size", str(self.config.batch_size),
-            "--learning_rate", str(self.config.learning_rate),
-            "--max_length", str(self.config.max_length),
-        ], check=True)
+        subprocess.run(cmd, check=True)
 
     def _generate_train_script(self, output_path: Path):
         """生成训练脚本"""
         script = '''#!/usr/bin/env python3
 """Qwen微调训练脚本"""
+import os
+os.environ["HF_ENDPOINT"] = "https://modelscope.cn"
+
 import argparse
 import json
+from pathlib import Path
+from modelscope import snapshot_download
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
 from datasets import Dataset
 import torch
@@ -132,6 +159,7 @@ def preprocess(example, tokenizer, max_length):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument("--model_path", type=str, default=None, help="本地模型路径(优先于model_name)")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--num_epochs", type=int, default=3)
@@ -140,18 +168,26 @@ def main():
     parser.add_argument("--max_length", type=int, default=2048)
     args = parser.parse_args()
 
-    print(f"加载模型: {args.model_name}")
-    model_path = {
+    model_name_map = {
         "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
         "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
         "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
-    }.get(args.model_name, args.model_name)
+    }
+    model_id = model_name_map.get(args.model_name, args.model_name)
+    
+    if args.model_path and Path(args.model_path).exists():
+        model_path = args.model_path
+        print(f"使用本地模型: {model_path}")
+    else:
+        print(f"从ModelScope下载模型: {model_id}")
+        model_path = snapshot_download(model_id)
+        print(f"模型已缓存到: {model_path}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map="cpu",
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
         trust_remote_code=True
     )
 
@@ -173,6 +209,7 @@ def main():
         logging_steps=100,
         report_to="none",
         fp16=False,
+        dataloader_pin_memory=False,
     )
 
     trainer = Trainer(

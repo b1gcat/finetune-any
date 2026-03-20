@@ -37,9 +37,13 @@ ENV/
 models/
 
 # Output
-output/
+output/temp/
+output/*.log
 data/raw/
 data/processed/
+
+# Train docs (源文件应该由用户管理)
+train_docs/
 
 # OS
 .DS_Store

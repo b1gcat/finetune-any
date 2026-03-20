@@ -6,44 +6,50 @@
 
 ```bash
 pip install -r requirements.txt
+pip install pdfplumber  # PDF解析
 ```
 
-## 使用方法
-
-### 1. 解析文档
+## 快速开始
 
 ```bash
-python main.py parse ./docs -o ./data/docs.json
-# 支持格式: PDF, DOCX, TXT, Markdown
+# 一键全流程
+python main.py all --doc-dir ./train_docs --model Qwen2.5-0.5B --name mymodel --epochs 1
 ```
 
-### 2. 生成训练数据
+## 命令说明
 
+### parse - 解析文档
 ```bash
-python main.py generate ./data/docs.json -o ./data/train.jsonl
+python main.py parse ./train_docs -o ./output/temp/docs.json -r
+```
+- 支持格式: PDF, DOCX, TXT, Markdown
+- `-r`: 递归处理子目录
+
+### generate - 生成训练数据
+```bash
+python main.py generate ./output/temp/docs.json -o ./output/temp/train.jsonl
 ```
 
-### 3. 执行微调
-
+### finetune - 微调训练
 ```bash
-python main.py finetune --model Qwen2.5-0.5B --data ./data/train.jsonl --output ./output --epochs 3
+python main.py finetune --model Qwen2.5-0.5B -o ./output --epochs 1
+```
+- 模型不存在时自动从 ModelScope 下载
+- `--model-path`: 使用本地模型
+
+### convert - 转换为 Ollama 格式
+```bash
+python main.py convert --adapter ./output/adapter --name mymodel
 ```
 
-### 4. 转换Ollama格式
-
+### clean - 清理临时文件
 ```bash
-python main.py convert --adapter ./output/adapter --name my-model
-```
-
-### 5. 一键全流程
-
-```bash
-python main.py all --doc-dir ./docs --name my-model --epochs 3
+python main.py clean  # 清理 temp/ 目录
 ```
 
 ## 模型支持
 
-- Qwen2.5-0.5B (推荐，CPU友好，macOS/ Linux)
+- Qwen2.5-0.5B (推荐，CPU友好)
 - Qwen2.5-1.8B
 - Qwen2.5-7B
 
@@ -52,13 +58,15 @@ python main.py all --doc-dir ./docs --name my-model --epochs 3
 ```
 .
 ├── main.py              # CLI入口
-├── config.yaml           # 配置文件
 ├── requirements.txt     # 依赖
-├── src/
-│   ├── doc_parser/       # 文档解析
-│   ├── data_gen/         # 数据生成
-│   ├── finetuner/        # 微调
-│   └── converter/        # 模型转换
-├── data/                 # 数据目录
-└── output/               # 输出目录
+├── train_docs/          # 源文件目录 (PDF/DOCX等)
+└── output/
+    ├── temp/           # 临时文件 (可清理)
+    │   ├── docs.json
+    │   └── train.jsonl
+    └── adapter/        # 微调后的模型
 ```
+
+## 模型下载
+
+模型默认从 ModelScope 下载，保存到 `~/.cache/modelscope/`
