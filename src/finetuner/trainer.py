@@ -29,6 +29,7 @@ class FinetuneConfig:
     save_steps: int = 500
     eval_steps: int = 500
     deepspeed: Optional[str] = None
+    device: str = "cuda"
 
     def to_dict(self) -> dict:
         return {
@@ -124,7 +125,7 @@ import argparse
 import json
 from pathlib import Path
 from modelscope import snapshot_download
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForLanguageModeling
 from datasets import Dataset
 import torch
 
@@ -154,6 +155,11 @@ def main():
     parser.add_argument("--max_length", type=int, default=2048)
     args = parser.parse_args()
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"使用设备: {device}")
+
+    torch_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+
     model_name_map = {
         "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
         "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
@@ -170,10 +176,12 @@ def main():
         print(f"模型已缓存到: {model_path}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        device_map="cpu",
-        torch_dtype=torch.float32,
+        device_map="auto",
+        torch_dtype=torch_dtype,
         trust_remote_code=True
     )
 
@@ -182,7 +190,8 @@ def main():
     dataset = Dataset.from_list(raw_data)
     dataset = dataset.map(
         lambda x: preprocess(x, tokenizer, args.max_length),
-        remove_columns=dataset.column_names
+        remove_columns=dataset.column_names,
+        batched=False
     )
 
     training_args = TrainingArguments(
@@ -194,14 +203,17 @@ def main():
         save_total_limit=2,
         logging_steps=100,
         report_to="none",
-        fp16=False,
+        bf16=device == "cuda",
         dataloader_pin_memory=False,
     )
+
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
+        data_collator=data_collator,
     )
 
     print("开始训练...")
@@ -225,6 +237,7 @@ if __name__ == "__main__":
     def evaluate(self, data_path: str = None, use_base_model: bool = False) -> dict:
         """评估模型"""
         import json
+
         if data_path is None:
             data_path = self.config.data_path
 
@@ -237,7 +250,9 @@ if __name__ == "__main__":
                 "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
                 "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
             }
-            base_model_id = model_name_map.get(self.config.model_name, self.config.model_name)
+            base_model_id = model_name_map.get(
+                self.config.model_name, self.config.model_name
+            )
             model_load = f'''
 from modelscope import snapshot_download
 print(f"从ModelScope下载基础模型: {base_model_id}")
@@ -245,7 +260,11 @@ model_path = snapshot_download("{base_model_id}")
 print(f"模型已缓存: {{model_path}}")
 '''
         else:
-            adapter_path = self.config.model_path if self.config.model_path else self.get_adapter_path()
+            adapter_path = (
+                self.config.model_path
+                if self.config.model_path
+                else self.get_adapter_path()
+            )
             model_load = f'''
 model_path = "{adapter_path}"
 '''
@@ -259,39 +278,126 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
 
+device_map = "{self.config.device}"
+if device_map == "gpu":
+    device_map = "cuda"
+device = device_map
+print(f"[INFO] 使用设备: {{device}}")
+
+if device == "cpu":
+    torch.set_num_threads(os.cpu_count() or 4)
+    print(f"[INFO] CPU threads: {{torch.get_num_threads()}}")
+
 data_path = "{data_path}"
+output_path = data_path.replace(".jsonl", "_eval_result.jsonl")
 
 {model_load}
-print(f"加载模型: {{model_path}}")
+torch_dtype = torch.float32 if device == "cpu" else torch.bfloat16
+print(f"[INFO] 加载模型: {{model_path}}")
 tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+tokenizer.padding_side = "left"
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
 model = AutoModelForCausalLM.from_pretrained(
-    model_path, device_map="cpu", torch_dtype=torch.float32, trust_remote_code=True
+    model_path, device_map=device_map, torch_dtype=torch_dtype, trust_remote_code=True
 )
+model.eval()
 
-print(f"加载测试数据: {{data_path}}")
+print(f"[INFO] 加载测试数据: {{data_path}}")
 with open(data_path, "r", encoding="utf-8") as f:
     test_data = [json.loads(line) for line in f]
 
-print(f"\\n===== 开始评估 (共{{len(test_data)}}题) =====\\n")
-for i, item in enumerate(test_data):
+print(f"[INFO] 开始评估 (共{{len(test_data)}}题)\\n")
+
+prompts = []
+for item in test_data:
     instruction = item.get("instruction", "根据以下文档内容回答问题。回答时说明来源文档。")
     input_text = item.get("input", "")
-    expected = item.get("output", "")
-
     prompt = f"{{instruction}}\\n\\n{{input_text}}"
-    inputs = tokenizer(prompt, return_tensors="pt")
-    outputs = model.generate(**inputs, max_new_tokens=150, do_sample=False)
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True).replace(prompt, "").strip()
+    prompts.append(prompt)
 
-    print(f"[{{i+1}}/{{len(test_data)}}] {{input_text[:50]}}...")
-    print(f"  预期: {{expected[:60]}}")
-    print(f"  回答: {{response[:80]}}")
-    print()
+inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+batch_size = 16
+
+results = []
+with torch.no_grad():
+    for i in range(0, len(prompts), batch_size):
+        batch_inputs = {{k: v[i:i+batch_size] for k, v in inputs.items()}}
+        outputs = model.generate(**batch_inputs, max_new_tokens=150, do_sample=False)
+        progress = min(i + batch_size, len(prompts))
+        print(f"[进度] {{progress}}/{{len(prompts)}}", end="\\r")
+        for j, output in enumerate(outputs):
+            idx = i + j
+            response = tokenizer.decode(output, skip_special_tokens=True).replace(prompts[idx], "").strip()
+            results.append({{"response": response, "prompt": prompts[idx]}})
+
+print("\\n[INFO] 评估回答中...")
+
+def calc_similarity(text1, text2):
+    text1 = set(text1.lower().split())
+    text2 = set(text2.lower().split())
+    if not text1 or not text2:
+        return 0.0
+    return len(text1 & text2) / len(text1 | text2)
+
+eval_results = []
+correct = 0
+for item, result in zip(test_data, results):
+    expected = item.get("output", "")
+    response = result["response"]
+
+    sim = calc_similarity(response, expected)
+    is_correct = sim >= 0.5
+
+    if is_correct:
+        correct += 1
+
+    eval_results.append({{
+        "instruction": item.get("instruction", ""),
+        "input": item.get("input", ""),
+        "expected": expected,
+        "response": response,
+        "similarity": round(sim, 3),
+        "correct": is_correct
+    }})
+
+accuracy = correct / len(test_data) * 100
+
+print("\\n" + "=" * 60)
+print(f"[汇总] 正确: {{correct}}/{{len(test_data)}} ({{accuracy:.1f}}%)")
+print("=" * 60)
+
+with open(output_path, "w", encoding="utf-8") as f:
+    for r in eval_results:
+        f.write(json.dumps(r, ensure_ascii=False) + "\\n")
+
+print(f"[INFO] 评估结果已保存: {{output_path}}")
+
+for i, r in enumerate(eval_results[:5]):
+    status = "✓" if r["correct"] else "✗"
+    print(f"\\n[{{status}}] {{i+1}}. {{r['input'][:40]}}...")
+    print(f"  预期: {{r['expected'][:50]}}")
+    print(f"  回答: {{r['response'][:50]}}")
+    print(f"  相似度: {{r['similarity']}}")
+
+if len(eval_results) > 5:
+    print(f"\\n... 还有 {{len(eval_results)-5}} 条结果")
+
+print("\\n[INFO] 评估完成!")
 '''
         eval_script.write_text(script_content)
-        result = subprocess.run(["python", str(eval_script)], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"评估失败: {result.stderr}")
+        process = subprocess.Popen(
+            ["python", str(eval_script)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        for line in process.stdout:
+            print(line, end="")
+        process.wait()
+        if process.returncode != 0:
+            print(f"评估失败")
         with open(data_path, "r", encoding="utf-8") as f:
             count = len([json.loads(line) for line in f])
         return {"test_count": count}

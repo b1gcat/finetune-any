@@ -5,63 +5,96 @@
 ## 安装
 
 ```bash
-pip install -r requirements.txt
-pip install pdfplumber  # PDF解析
+# 安装依赖
+uv pip install -r requirements.txt
+uv pip install pdfplumber  # PDF解析
 ```
 
 ## 快速开始
 
 ```bash
-# 一键全流程 (解析 -> 生成数据 -> 训练 -> 对比评估 -> 转换)
-python main.py all --doc-dir ./train_docs --model Qwen2.5-0.5B --name mymodel --epochs 1
+# 一键全流程（使用默认参数）
+uv run main.py all
+
+# 指定参数
+uv run main.py all --doc-dir ./train_docs --model Qwen2.5-0.5B --name mymodel --epochs 1 --device cuda
 ```
 
 ## 命令说明
 
 ### all - 一键全流程
 ```bash
-python main.py all --doc-dir ./train_docs --model Qwen2.5-0.5B --name mymodel --epochs 1
+uv run main.py all [选项]
 ```
-- 流程: 解析文档 -> 生成数据 -> 微调训练 -> 对比评估 -> 转换Ollama
-- 对比评估: 训练后自动对比基础模型和微调模型的效果差异
+- 流程: 解析文档 -> 生成训练/测试集 -> 微调训练 -> 评估 -> 转换Ollama -> 清理
+- 默认参数:
+  - `--doc-dir ./train_docs` - 文档目录
+  - `--name mymodel` - Ollama模型名称
+  - `--model Qwen2.5-0.5B` - 模型名称
+  - `--epochs 3` - 训练轮数
+  - `--test-ratio 0.2` - 测试集比例
+  - `--device cuda` - 设备 (cuda/cpu)
 
 ### parse - 解析文档
 ```bash
-python main.py parse ./train_docs -o ./output/temp/docs.json -r
+uv run main.py parse ./train_docs -o ./output/temp/docs.json -r
 ```
 - 支持格式: PDF, DOCX, TXT, Markdown
 - `-r`: 递归处理子目录
 
 ### generate - 生成训练数据
 ```bash
-python main.py generate ./output/temp/docs.json -o ./output/temp/train.jsonl
+uv run main.py generate ./output/temp/docs.json -o ./output/temp/train.jsonl
+```
+
+### generate-test - 生成测试集
+```bash
+uv run main.py generate-test ./output/temp/docs.json -o ./output/temp/test.jsonl --test-ratio 0.2
 ```
 
 ### finetune - 微调训练
 ```bash
-python main.py finetune --model Qwen2.5-0.5B -o ./output --epochs 1
+uv run main.py finetune --model Qwen2.5-0.5B -o ./output --epochs 1 --device cuda
 ```
 - 模型不存在时自动从 ModelScope 下载
 - `--model-path`: 使用本地模型
 
 ### evaluate - 评估模型
 ```bash
-# 评估微调模型
-python main.py evaluate --adapter ./output/adapter
+# 评估微调模型（使用测试集）
+uv run main.py evaluate
 
-# 对比评估 (基础模型 vs 微调模型)
-python main.py evaluate --adapter ./output/adapter --compare
+# 指定测试数据
+uv run main.py evaluate --data ./output/temp/test.jsonl
+
+# 指定设备
+uv run main.py evaluate --device cuda
+
+# 对比评估（基础模型 vs 微调模型）
+uv run main.py evaluate --compare --device cuda
 ```
+- 评估结果保存到: `output/temp/test_eval_result.jsonl`
 
 ### convert - 转换为 Ollama 格式
 ```bash
-python main.py convert --adapter ./output/adapter --name mymodel
+uv run main.py convert --adapter ./output/adapter --name mymodel
 ```
 
 ### clean - 清理临时文件
 ```bash
-python main.py clean  # 清理 output/temp/ 目录
+uv run main.py clean
 ```
+
+## 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--doc-dir` | `./train_docs` | 文档目录 |
+| `--model` | `Qwen2.5-0.5B` | 模型名称 |
+| `--name` | `mymodel` | Ollama模型名称 |
+| `--epochs` | `3` | 训练轮数 |
+| `--test-ratio` | `0.2` | 测试集比例 |
+| `--device` | `cuda` | 设备 (cuda/cpu) |
 
 ## 模型支持
 
@@ -78,8 +111,10 @@ python main.py clean  # 清理 output/temp/ 目录
 ├── train_docs/          # 源文件目录 (PDF/DOCX等)
 └── output/
     ├── temp/           # 临时文件 (可清理)
-    │   ├── docs.json
-    │   └── train.jsonl
+    │   ├── docs.json       # 解析后的文档
+    │   ├── train.jsonl     # 训练数据
+    │   ├── test.jsonl     # 测试数据
+    │   └── test_eval_result.jsonl  # 评估结果
     └── adapter/        # 微调后的模型
 ```
 
