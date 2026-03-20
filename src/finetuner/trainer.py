@@ -235,3 +235,71 @@ if __name__ == "__main__":
     def get_adapter_path(self) -> str:
         """获取适配器路径"""
         return str(Path(self.config.output_dir) / "adapter")
+
+    def evaluate(self, data_path: str = None, use_base_model: bool = False) -> dict:
+        """评估模型"""
+        if data_path is None:
+            data_path = self.config.data_path
+
+        eval_script = Path(self.config.output_dir) / "temp" / "evaluate.py"
+        eval_script.parent.mkdir(parents=True, exist_ok=True)
+
+        if use_base_model:
+            model_name_map = {
+                "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
+                "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
+                "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
+            }
+            base_model_id = model_name_map.get(self.config.model_name, self.config.model_name)
+            model_load = f'''
+from modelscope import snapshot_download
+print(f"从ModelScope下载基础模型: {base_model_id}")
+model_path = snapshot_download("{base_model_id}")
+print(f"模型已缓存: {{model_path}}")
+'''
+        else:
+            model_load = f'''
+model_path = "{self.get_adapter_path()}"
+'''
+
+        script_content = f'''#!/usr/bin/env python3
+import os
+os.environ["HF_ENDPOINT"] = "https://modelscope.cn"
+
+import json
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from pathlib import Path
+
+data_path = "{data_path}"
+
+{model_load}
+print(f"加载模型: {{model_path}}")
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    model_path, device_map="cpu", dtype=torch.float32, trust_remote_code=True
+)
+
+print(f"加载测试数据: {{data_path}}")
+with open(data_path, "r", encoding="utf-8") as f:
+    test_data = [json.loads(line) for line in f]
+
+print(f"\\n===== 开始评估 (共{{len(test_data)}}题) =====\\n")
+for i, item in enumerate(test_data):
+    instruction = item.get("instruction", "")
+    input_text = item.get("input", "")
+    expected = item.get("output", "")
+
+    prompt = f"{{instruction}}\\n\\n{{input_text}}"
+    inputs = tokenizer(prompt, return_tensors="pt")
+    outputs = model.generate(**inputs, max_new_tokens=100, do_sample=False)
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True).replace(prompt, "").strip()
+
+    print(f"[{{i+1}}/{{len(test_data)}}] {{input_text[:50]}}...")
+    print(f"  预期: {{expected[:60]}}")
+    print(f"  回答: {{response[:60]}}")
+    print()
+'''
+        eval_script.write_text(script_content)
+        subprocess.run(["python", str(eval_script)], check=True)
+        return {"test_count": len(test_data) if use_base_model else 0}

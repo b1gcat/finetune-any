@@ -122,6 +122,63 @@ def finetune(
 
 
 @cli.command()
+@click.option("--adapter", "adapter_path", default="./output/adapter", help="模型路径")
+@click.option("--data", "data_path", default="./output/temp/train.jsonl", help="测试数据路径")
+@click.option("-o", "--output", "output_dir", default="./output", help="输出目录")
+@click.option("--model", "model_name", default="Qwen2.5-0.5B", help="基础模型名称")
+@click.option("--compare", is_flag=True, help="对比基础模型")
+def evaluate(adapter_path: str, data_path: str, output_dir: str, model_name: str, compare: bool):
+    """评估微调后的模型"""
+    if not Path(data_path).exists():
+        click.echo(f"错误: 测试数据不存在 {data_path}")
+        sys.exit(1)
+
+    if not Path(adapter_path).exists():
+        click.echo(f"错误: 模型不存在 {adapter_path}")
+        sys.exit(1)
+
+    if compare:
+        click.echo("\n" + "="*60)
+        click.echo("【对比评估】")
+        click.echo("="*60)
+
+        click.echo("\n>>> 基础模型 (未训练)")
+        click.echo("-"*40)
+        config_base = FinetuneConfig(
+            model_name=model_name,
+            model_path=None,
+            data_path=data_path,
+            output_dir=output_dir,
+        )
+        finetuner_base = Finetuner(config_base)
+        finetuner_base.evaluate(data_path, use_base_model=True)
+
+        click.echo("\n>>> 微调模型 (训练后)")
+        click.echo("-"*40)
+        config = FinetuneConfig(
+            model_name="local",
+            model_path=adapter_path,
+            data_path=data_path,
+            output_dir=output_dir,
+        )
+        finetuner = Finetuner(config)
+        finetuner.evaluate(data_path)
+
+        click.echo("\n" + "="*60)
+        click.echo("【对比完成】")
+        click.echo("="*60)
+    else:
+        config = FinetuneConfig(
+            model_name="local",
+            model_path=adapter_path,
+            data_path=data_path,
+            output_dir=output_dir,
+        )
+        finetuner = Finetuner(config)
+        finetuner.evaluate(data_path)
+
+
+@cli.command()
 @click.option("--base-model", "base_model", default="Qwen2.5-0.5B", help="基础模型")
 @click.option(
     "--base-model-path", "base_model_path", default=None, help="本地基础模型路径"
@@ -172,7 +229,7 @@ def all(
     model_name_ollama: str,
     num_epochs: int,
 ):
-    """一键执行全流程: 解析文档 -> 生成数据 -> 微调 -> 转换"""
+    """一键执行全流程: 解析文档 -> 生成数据 -> 微调 -> 评估 -> 转换"""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     docs_json = Path(output_dir) / "temp" / "docs.json"
     data_jsonl = Path(output_dir) / "temp" / "train.jsonl"
@@ -180,13 +237,13 @@ def all(
 
     click.echo("=== 文档微调程序 - 全流程 ===")
 
-    click.echo("\n[1/4] 解析文档...")
+    click.echo("\n[1/5] 解析文档...")
     parser = DocumentParser(doc_dir)
     documents = parser.parse_all(recursive=True)
     parser.save_to_json(documents, str(docs_json))
     click.echo(f"  -> 解析完成: {len(documents)} 个文档")
 
-    click.echo("\n[2/4] 生成训练数据...")
+    click.echo("\n[2/5] 生成训练数据...")
     with open(docs_json, "r", encoding="utf-8") as f:
         docs = json.load(f)
     generator = DataGenerator()
@@ -194,7 +251,7 @@ def all(
     generator.save_to_jsonl(qa_list, str(data_jsonl))
     click.echo(f"  -> 生成完成: {len(qa_list)} 个问答对")
 
-    click.echo("\n[3/4] 执行微调...")
+    click.echo("\n[3/5] 执行微调...")
     config = FinetuneConfig(
         model_name=model_name,
         model_path=model_path,
@@ -207,7 +264,10 @@ def all(
     finetuner.train()
     click.echo(f"  -> 微调完成: {finetuner.get_adapter_path()}")
 
-    click.echo("\n[4/4] 转换Ollama模型...")
+    click.echo("\n[4/5] 评估模型...")
+    finetuner.evaluate(str(data_jsonl))
+
+    click.echo("\n[5/5] 转换Ollama模型...")
     converter = ModelConverter(
         base_model=model_path if model_path else model_name,
         adapter_path=finetuner.get_adapter_path(),

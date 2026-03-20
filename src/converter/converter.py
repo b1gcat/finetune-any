@@ -21,42 +21,54 @@ class ModelConverter:
 
         merge_script = self.output_dir / "merge.py"
         merge_script.write_text(f'''#!/usr/bin/env python3
+import os
+os.environ["HF_ENDPOINT"] = "https://modelscope.cn"
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
 
-base_model = "{self.base_model}"
 adapter_path = "{self.adapter_path}"
 output_path = "{self.merged_dir}"
 
-print(f"加载基础模型: {{base_model}}")
-base_model_info = {{
-    "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
-    "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
-    "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
-}}.get(base_model, base_model)
+adapter_config = Path(adapter_path) / "adapter_config.json"
+if adapter_config.exists():
+    print("检测到LoRA适配器，合并模型...")
+    from modelscope import snapshot_download
+    from peft import PeftModel
+    
+    model_name_map = {{
+        "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
+        "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
+        "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
+    }}
+    base_model_id = model_name_map.get("{self.base_model}", "{self.base_model}")
+    print(f"从ModelScope下载基础模型: {{base_model_id}}")
+    model_path = snapshot_download(base_model_id)
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_path, device_map="cpu", torch_dtype=torch.float32, trust_remote_code=True
+    )
+    print(f"加载LoRA适配器: {{adapter_path}}")
+    model = PeftModel.from_pretrained(base_model, str(adapter_path))
+    model = model.merge_and_unload()
+    print("适配器合并完成")
+else:
+    print("检测到完整模型，直接使用...")
+    model_path = Path(adapter_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, device_map="cpu", torch_dtype=torch.float32, trust_remote_code=True
+    )
 
-tokenizer = AutoTokenizer.from_pretrained(base_model_info, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    base_model_info,
-    device_map="cpu",
-    torch_dtype=torch.float32,
-    trust_remote_code=True
-)
-
-if Path(adapter_path).exists():
-    try:
-        from peft import PeftModel
-        print(f"加载LoRA适配器: {{adapter_path}}")
-        model = PeftModel.from_pretrained(model, str(adapter_path))
-        model = model.merge_and_unload()
-        print("适配器合并完成")
-    except ImportError:
-        print("警告: peft未安装，跳过LoRA合并")
-
-print(f"保存合并模型: {{output_path}}")
+print(f"保存模型到: {{output_path}}")
 model.save_pretrained(output_path)
 tokenizer.save_pretrained(output_path)
+
+import subprocess
+size = subprocess.check_output(["du", "-sh", output_path]).decode().split()[0]
+print(f"模型大小: {{size}}")
 print("完成!")
 ''')
 
