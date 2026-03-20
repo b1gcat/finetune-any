@@ -57,17 +57,6 @@ class Finetuner:
 
     def __init__(self, config: FinetuneConfig):
         self.config = config
-        self._check_xtuner()
-
-    def _check_xtuner(self):
-        """检查Xtuner是否安装"""
-        try:
-            subprocess.run(["xtuner", "--version"], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("警告: Xtuner未安装，将使用transformers直接微调")
-            self.use_xtuner = False
-        else:
-            self.use_xtuner = True
 
     def prepare_data(self) -> str:
         """准备训练数据"""
@@ -90,10 +79,7 @@ class Finetuner:
             f"训练参数: batch_size={self.config.batch_size}, lr={self.config.learning_rate}, epochs={self.config.num_epochs}"
         )
 
-        if self.use_xtuner:
-            self._train_with_xtuner()
-        else:
-            self._train_with_transformers()
+        self._train_with_transformers()
 
     def _train_with_transformers(self):
         """使用transformers微调"""
@@ -187,7 +173,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map="cpu",
-        dtype=torch.float32,
+        torch_dtype=torch.float32,
         trust_remote_code=True
     )
 
@@ -238,6 +224,7 @@ if __name__ == "__main__":
 
     def evaluate(self, data_path: str = None, use_base_model: bool = False) -> dict:
         """评估模型"""
+        import json
         if data_path is None:
             data_path = self.config.data_path
 
@@ -258,8 +245,9 @@ model_path = snapshot_download("{base_model_id}")
 print(f"模型已缓存: {{model_path}}")
 '''
         else:
+            adapter_path = self.config.model_path if self.config.model_path else self.get_adapter_path()
             model_load = f'''
-model_path = "{self.get_adapter_path()}"
+model_path = "{adapter_path}"
 '''
 
         script_content = f'''#!/usr/bin/env python3
@@ -277,7 +265,7 @@ data_path = "{data_path}"
 print(f"加载模型: {{model_path}}")
 tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(
-    model_path, device_map="cpu", dtype=torch.float32, trust_remote_code=True
+    model_path, device_map="cpu", torch_dtype=torch.float32, trust_remote_code=True
 )
 
 print(f"加载测试数据: {{data_path}}")
@@ -301,5 +289,9 @@ for i, item in enumerate(test_data):
     print()
 '''
         eval_script.write_text(script_content)
-        subprocess.run(["python", str(eval_script)], check=True)
-        return {"test_count": len(test_data) if use_base_model else 0}
+        result = subprocess.run(["python", str(eval_script)], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"评估失败: {result.stderr}")
+        with open(data_path, "r", encoding="utf-8") as f:
+            count = len([json.loads(line) for line in f])
+        return {"test_count": count}
