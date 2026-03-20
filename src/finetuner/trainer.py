@@ -286,18 +286,18 @@ with open(data_path, "r", encoding="utf-8") as f:
 
 print(f"\\n===== 开始评估 (共{{len(test_data)}}题) =====\\n")
 for i, item in enumerate(test_data):
-    instruction = item.get("instruction", "")
+    instruction = item.get("instruction", "根据以下文档内容回答问题。回答时说明来源文档。")
     input_text = item.get("input", "")
     expected = item.get("output", "")
 
     prompt = f"{{instruction}}\\n\\n{{input_text}}"
     inputs = tokenizer(prompt, return_tensors="pt")
-    outputs = model.generate(**inputs, max_new_tokens=100, do_sample=False)
+    outputs = model.generate(**inputs, max_new_tokens=150, do_sample=False)
     response = tokenizer.decode(outputs[0], skip_special_tokens=True).replace(prompt, "").strip()
 
     print(f"[{{i+1}}/{{len(test_data)}}] {{input_text[:50]}}...")
     print(f"  预期: {{expected[:60]}}")
-    print(f"  回答: {{response[:60]}}")
+    print(f"  回答: {{response[:80]}}")
     print()
 '''
         eval_script.write_text(script_content)

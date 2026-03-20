@@ -74,7 +74,7 @@ class DataGenerator:
 
         for pattern, (qtype, question_prefix) in keywords.items():
             if re.search(pattern, section):
-                instruction = f"根据以下文档内容回答问题。"
+                instruction = f"根据以下文档内容回答问题。回答时说明来源文档。"
                 question = f"{context}关于{qtype}，{section[:100]}... 具体内容是什么？"
 
                 qa_list.append(QA(
@@ -85,7 +85,7 @@ class DataGenerator:
 
         if not qa_list:
             qa_list.append(QA(
-                instruction="根据以下文档内容回答问题。",
+                instruction="根据以下文档内容回答问题。回答时说明来源文档。",
                 input=f"{context}这段内容讲了什么？",
                 output=section[:500]
             ))
