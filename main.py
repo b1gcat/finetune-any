@@ -1,381 +1,426 @@
 #!/usr/bin/env python3
-"""文档微调程序 - 命令行入口"""
+"""微调程序 - 交互式引导"""
 
+import os
 import sys
-import json
-import click
 from pathlib import Path
 
-from src.doc_parser.parser import DocumentParser
 from src.data_gen.generator import DataGenerator
 from src.finetuner.trainer import Finetuner, FinetuneConfig
 from src.converter.converter import ModelConverter
 
 
-@click.group()
-@click.version_option(version="0.1.0")
-def cli():
-    """文档微调程序 - 从文档自动生成训练数据并微调模型"""
-    pass
+def print_banner():
+    banner = """
+╔═══════════════════════════════════════════════════════╗
+║                                                       ║
+║           微调程序 - 交互式引导                        ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+    """
+    print(banner)
 
 
-@cli.command()
-def clean():
-    """清理临时文件 (保留 output/adapter)"""
-    import shutil
-
-    removed = []
-
-    if Path("output/temp").exists():
-        shutil.rmtree("output/temp")
-        removed.append("output/temp/")
-        print("已清理: output/temp/")
-
-    if not removed:
-        click.echo("没有需要清理的临时文件")
+def print_step(step, total, title):
+    print(f"\n{'='*50}")
+    print(f"  步骤 {step}/{total}: {title}")
+    print(f"{'='*50}")
 
 
-@cli.command()
-@click.argument("doc_dir", type=click.Path(exists=True))
-@click.option(
-    "-o",
-    "--output",
-    "output_path",
-    default="./output/temp/docs.json",
-    help="输出JSON路径",
-)
-@click.option("-r", "--recursive", is_flag=True, help="递归处理子目录")
-def parse(doc_dir: str, output_path: str, recursive: bool):
-    """解析文档"""
-    click.echo(f"解析文档目录: {doc_dir}")
+def input_choice(prompt, options, default=None):
+    """显示选项并获取用户选择"""
+    while True:
+        print(f"\n{prompt}")
+        for i, opt in enumerate(options, 1):
+            marker = " ← 默认" if default and opt == default else ""
+            print(f"  {i}. {opt}{marker}")
+        
+        choice = input("\n请选择 (直接回车使用默认): ").strip()
+        
+        if not choice and default:
+            return default
+        
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(options):
+                return options[idx]
+        except ValueError:
+            pass
+        
+        print("无效选择，请重新输入")
 
-    parser = DocumentParser(doc_dir)
-    documents = parser.parse_all(recursive=recursive)
 
-    if documents:
-        parser.save_to_json(documents, output_path)
-        click.echo(f"成功解析 {len(documents)} 个文档")
+def input_text(prompt, default=None, required=True):
+    """获取文本输入"""
+    while True:
+        default_str = f" (直接回车: {default})" if default else ""
+        value = input(f"\n{prompt}{default_str}: ").strip()
+        
+        if not value and default:
+            return default
+        
+        if not value and required:
+            print("此项为必填，请输入")
+            continue
+        
+        return value
+
+
+def input_yes_no(prompt, default=True):
+    """是/否确认"""
+    default_str = " [Y/n]" if default else " [y/N]"
+    while True:
+        value = input(f"\n{prompt}{default_str}: ").strip().lower()
+        
+        if not value:
+            return default
+        
+        if value in ['y', 'yes', '是']:
+            return True
+        elif value in ['n', 'no', '否']:
+            return False
+        
+        print("请输入 y 或 n")
+
+
+def main():
+    print_banner()
+    
+    config = {
+        'mode': None,  # 'train', 'evaluate', 'convert'
+        'dataset_dir': None,
+        'train_data': None,
+        'test_data': None,
+        'model_name': None,
+        'model_path': None,
+        'adapter_path': None,
+        'output_dir': './output',
+        'ollama_name': None,
+        'num_epochs': 3,
+        'test_ratio': 0.2,
+        'device': 'cuda',
+    }
+    
+    print("\n请选择操作模式:")
+    print("  1. 完整流程 (训练 + 评估 + 转换)")
+    print("  2. 仅评估 (需要已有训练好的模型)")
+    print("  3. 仅转换 (需要已有 adapter)")
+    
+    mode_choice = input("\n请选择 (1-3): ").strip()
+    
+    if mode_choice == "2":
+        config['mode'] = 'evaluate'
+    elif mode_choice == "3":
+        config['mode'] = 'convert'
     else:
-        click.echo("未找到任何文档")
-        sys.exit(1)
-
-
-@cli.command()
-@click.argument("docs_json", type=click.Path(exists=True))
-@click.option(
-    "-o",
-    "--output",
-    "output_path",
-    default="./output/temp/train.jsonl",
-    help="输出JSONL路径",
-)
-def generate(docs_json: str, output_path: str):
-    """生成训练数据"""
-    click.echo(f"从 {docs_json} 生成训练数据...")
-
-    with open(docs_json, "r", encoding="utf-8") as f:
-        documents = json.load(f)
-
-    generator = DataGenerator()
-    qa_list = generator.generate_from_documents(documents)
-
-    generator.save_to_jsonl(qa_list, output_path)
-    click.echo(f"生成 {len(qa_list)} 个问答对")
-
-
-@cli.command()
-@click.argument("docs_json", type=click.Path(exists=True))
-@click.option(
-    "-o",
-    "--output",
-    "output_path",
-    default="./output/temp/test.jsonl",
-    help="输出JSONL路径",
-)
-@click.option(
-    "--test-ratio",
-    "test_ratio",
-    default=0.2,
-    help="测试集比例",
-)
-def generate_test(docs_json: str, output_path: str, test_ratio: float):
-    """从文档生成测试集（与训练集分开）"""
-    click.echo(f"从 {docs_json} 生成测试集 (比例: {test_ratio})...")
-
-    with open(docs_json, "r", encoding="utf-8") as f:
-        documents = json.load(f)
-
-    generator = DataGenerator()
-    qa_list = generator.generate_from_documents(documents)
-
-    import random
-
-    random.shuffle(qa_list)
-    test_size = int(len(qa_list) * test_ratio)
-    test_data = qa_list[:test_size]
-
-    generator.save_to_jsonl(test_data, output_path)
-    click.echo(f"生成 {len(test_data)} 个测试问答对")
-
-
-@cli.command()
-@click.option("--model", "model_name", default="Qwen2.5-0.5B", help="模型名称")
-@click.option(
-    "--model-path", "model_path", default=None, help="本地模型路径(优先于model_name)"
-)
-@click.option(
-    "--data", "data_path", default="./output/temp/train.jsonl", help="训练数据路径"
-)
-@click.option(
-    "-o",
-    "--output",
-    "output_dir",
-    default="./output",
-    help="输出目录",
-)
-@click.option("--epochs", "num_epochs", default=3, help="训练轮数")
-@click.option("--batch-size", "batch_size", default=1, help="批次大小")
-@click.option("--lr", "learning_rate", default=2e-4, help="学习率")
-def finetune(
-    model_name: str,
-    model_path: str,
-    data_path: str,
-    output_dir: str,
-    num_epochs: int,
-    batch_size: int,
-    learning_rate: float,
-):
-    """执行微调训练"""
-    if not Path(data_path).exists():
-        click.echo(f"错误: 训练数据不存在 {data_path}")
-        click.echo("请先运行: python main.py generate <docs_json>")
-        sys.exit(1)
-
-    click.echo(f"开始微调: {model_name}")
-    click.echo(f"训练数据: {data_path}")
-    click.echo(f"输出目录: {output_dir}")
-
-    config = FinetuneConfig(
-        model_name=model_name,
-        model_path=model_path,
-        data_path=data_path,
-        output_dir=output_dir,
-        num_epochs=num_epochs,
-        batch_size=batch_size,
-        learning_rate=learning_rate,
-    )
-
-    finetuner = Finetuner(config)
-    finetuner.prepare_data()
-    finetuner.train()
-
-    click.echo(f"微调完成! 适配器保存在: {finetuner.get_adapter_path()}")
-
-
-@cli.command()
-@click.option("--adapter", "adapter_path", default="./output/adapter", help="模型路径")
-@click.option(
-    "--data", "data_path", default="./output/temp/test.jsonl", help="测试数据路径"
-)
-@click.option("-o", "--output", "output_dir", default="./output", help="输出目录")
-@click.option("--model", "model_name", default="Qwen2.5-0.5B", help="基础模型名称")
-@click.option("--compare", is_flag=True, help="对比基础模型")
-@click.option("--device", "device", default="cuda", help="设备: cuda/cpu")
-def evaluate(
-    adapter_path: str,
-    data_path: str,
-    output_dir: str,
-    model_name: str,
-    compare: bool,
-    device: str,
-):
-    """评估微调后的模型"""
-    if not Path(data_path).exists():
-        click.echo(f"错误: 测试数据不存在 {data_path}")
-        click.echo(f"提示: 先生成测试集: python main.py generate-test <docs_json>")
-        sys.exit(1)
-
-    if not Path(adapter_path).exists():
-        click.echo(f"错误: 模型不存在 {adapter_path}")
-        sys.exit(1)
-
-    if compare:
-        click.echo("\n" + "=" * 60)
-        click.echo("【对比评估】")
-        click.echo("=" * 60)
-
-        click.echo("\n>>> 基础模型 (未训练)")
-        click.echo("-" * 40)
-        config_base = FinetuneConfig(
-            model_name=model_name,
-            model_path=None,
-            data_path=data_path,
-            output_dir=output_dir,
-            device=device,
-        )
-        finetuner_base = Finetuner(config_base)
-        finetuner_base.evaluate(data_path, use_base_model=True)
-
-        click.echo("\n>>> 微调模型 (训练后)")
-        click.echo("-" * 40)
-        config = FinetuneConfig(
-            model_name="local",
-            model_path=adapter_path,
-            data_path=data_path,
-            output_dir=output_dir,
-            device=device,
-        )
-        finetuner = Finetuner(config)
-        finetuner.evaluate(data_path)
-
-        click.echo("\n" + "=" * 60)
-        click.echo("【对比完成】")
-        click.echo("=" * 60)
+        config['mode'] = 'train'
+    
+    print("\n开始配置...")
+    
+    # 评估和转换模式需要的数据
+    if config['mode'] in ('evaluate', 'convert'):
+        print("\n请选择数据集来源 (用于加载测试数据或配置):")
+        print("  1. 从 ./dataset 目录加载")
+        print("  2. 指定自定义目录")
+        
+        dataset_choice = input("\n请选择 (1-2): ").strip()
+        if dataset_choice == "2":
+            config['dataset_dir'] = input_text("请输入数据集目录路径", required=False)
+        else:
+            config['dataset_dir'] = './dataset'
+    
+    # 步骤 2: 选择模型 (所有模式都需要)
+    print_step(2 if config['mode'] == 'train' else 2, 5 if config['mode'] == 'train' else 2, "选择基础模型")
+    
+    # 步骤 1: 选择数据集
+    print_step(1, 5, "选择数据集")
+    
+    print("\n请选择数据集来源:")
+    print("  1. 从 ./dataset 目录加载")
+    print("  2. 指定自定义目录")
+    print("  3. 直接指定 jsonl 文件")
+    
+    dataset_choice = input("\n请选择 (1-3): ").strip()
+    
+    if dataset_choice == "1":
+        config['dataset_dir'] = './dataset'
+    elif dataset_choice == "2":
+        config['dataset_dir'] = input_text("请输入数据集目录路径", required=True)
+    elif dataset_choice == "3":
+        config['train_data'] = input_text("请输入训练数据文件路径 (train.jsonl)", required=True)
+        config['test_data'] = input_text("请输入测试数据文件路径 (test.jsonl，可选)", required=False) or None
     else:
-        config = FinetuneConfig(
-            model_name="local",
-            model_path=adapter_path,
-            data_path=data_path,
-            output_dir=output_dir,
-            device=device,
-        )
-        finetuner = Finetuner(config)
-        result = finetuner.evaluate(data_path)
-        click.echo(f"评估完成: 测试了 {result.get('test_count', 0)} 条数据")
-
-
-@cli.command()
-@click.option("--base-model", "base_model", default="Qwen2.5-0.5B", help="基础模型")
-@click.option(
-    "--base-model-path", "base_model_path", default=None, help="本地基础模型路径"
-)
-@click.option(
-    "--adapter", "adapter_path", default="./output/adapter", help="LoRA适配器路径"
-)
-@click.option("-o", "--output", "output_dir", default="./output", help="输出目录")
-@click.option("--name", "model_name", required=True, help="Ollama模型名称")
-def convert(
-    base_model: str,
-    base_model_path: str,
-    adapter_path: str,
-    output_dir: str,
-    model_name: str,
-):
-    """转换模型为Ollama格式"""
-    click.echo(f"转换模型: {base_model} + {adapter_path}")
-
-    base_model_for_convert = base_model_path if base_model_path else base_model
-    converter = ModelConverter(
-        base_model=base_model_for_convert,
-        adapter_path=adapter_path,
-        output_dir=output_dir,
-    )
-
-    ollama_dir = converter.full_pipeline(model_name)
-    click.echo(f"Ollama模型已创建: {ollama_dir}")
-    click.echo(f"运行: ollama run {model_name}")
-
-
-@cli.command()
-@click.option(
-    "--doc-dir",
-    "doc_dir",
-    default="./train_docs",
-    help="文档目录 (支持PDF/DOCX/TXT/MD)",
-)
-@click.option("--model", "model_name", default="Qwen2.5-0.5B", help="模型名称")
-@click.option(
-    "--model-path", "model_path", default=None, help="本地模型路径(优先于model_name)"
-)
-@click.option("-o", "--output", "output_dir", default="./output", help="输出目录")
-@click.option("--name", "model_name_ollama", default="mymodel", help="Ollama模型名称")
-@click.option("--epochs", "num_epochs", default=3, help="训练轮数")
-@click.option("--test-ratio", "test_ratio", default=0.2, help="测试集比例")
-@click.option("--device", "device", default="cuda", help="设备: cuda/cpu")
-def all(
-    doc_dir: str,
-    model_name: str,
-    model_path: str,
-    output_dir: str,
-    model_name_ollama: str,
-    num_epochs: int,
-    test_ratio: float,
-    device: str,
-):
-    """一键执行全流程: 解析文档 -> 生成数据 -> 微调 -> 评估 -> 转换"""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    docs_json = Path(output_dir) / "temp" / "docs.json"
-    train_jsonl = Path(output_dir) / "temp" / "train.jsonl"
-    test_jsonl = Path(output_dir) / "temp" / "test.jsonl"
-    docs_json.parent.mkdir(parents=True, exist_ok=True)
-
-    click.echo("=== 文档微调程序 - 全流程 ===")
-
-    click.echo("\n[1/6] 解析文档...")
-    parser = DocumentParser(doc_dir)
-    documents = parser.parse_all(recursive=True)
-    parser.save_to_json(documents, str(docs_json))
-    click.echo(f"  -> 解析完成: {len(documents)} 个文档")
-
-    click.echo("\n[2/6] 生成训练数据...")
-    with open(docs_json, "r", encoding="utf-8") as f:
-        docs = json.load(f)
+        config['dataset_dir'] = './dataset'
+    
+    # 检查数据集是否存在
+    if config['dataset_dir']:
+        if not Path(config['dataset_dir']).exists():
+            print(f"\n✗ 目录不存在: {config['dataset_dir']}")
+            print("  将创建目录，请在其中放置 train.jsonl 文件")
+            Path(config['dataset_dir']).mkdir(parents=True, exist_ok=True)
+    
+    # 步骤 2: 选择模型
+    print_step(2, 5, "选择基础模型")
+    
+    print("\n请选择基础模型:")
+    print("  1. Qwen2.5-0.5B (最小，最快，适合测试)")
+    print("  2. Qwen2.5-1.8B (中等大小)")
+    print("  3. Qwen2.5-7B (较大，效果更好)")
+    print("  4. 本地模型")
+    
+    model_choice = input("\n请选择 (1-4): ").strip()
+    
+    if model_choice == "1":
+        config['model_name'] = "Qwen2.5-0.5B"
+    elif model_choice == "2":
+        config['model_name'] = "Qwen2.5-1.8B"
+    elif model_choice == "3":
+        config['model_name'] = "Qwen2.5-7B"
+    elif model_choice == "4":
+        config['model_path'] = input_text("请输入本地模型路径", required=True)
+        config['model_name'] = "local"
+    else:
+        config['model_name'] = "Qwen2.5-0.5B"
+    
+    # 步骤 3: 训练参数
+    print_step(3, 5, "设置训练参数")
+    
+    try:
+        epochs = int(input("\n训练轮数 [默认: 3]: ").strip() or "3")
+    except ValueError:
+        epochs = 3
+    config['num_epochs'] = epochs
+    
+    try:
+        test_ratio = float(input("测试集比例 [默认: 0.2]: ").strip() or "0.2")
+    except ValueError:
+        test_ratio = 0.2
+    config['test_ratio'] = test_ratio
+    
+    print("\n设备选择:")
+    print("  1. CUDA (GPU)")
+    print("  2. CPU")
+    device_choice = input("请选择 (1-2) [默认: 1]: ").strip()
+    config['device'] = 'cuda' if device_choice != "2" else 'cpu'
+    
+    # 步骤 4: 输出设置
+    print_step(4, 5, "设置输出")
+    
+    config['output_dir'] = input_text("输出目录", default='./output', required=False)
+    config['ollama_name'] = input_text("Ollama 模型名称", default='mymodel', required=False)
+    
+    # 步骤 5: 确认并执行
+    print_step(5, 5, "确认配置")
+    
+    print("\n" + "=" * 50)
+    print("  配置汇总")
+    print("=" * 50)
+    print(f"  操作模式: ", end="")
+    if config['mode'] == 'train':
+        print("完整流程")
+    elif config['mode'] == 'evaluate':
+        print("仅评估")
+    else:
+        print("仅转换")
+    
+    if config['mode'] in ('train', 'evaluate'):
+        if config['dataset_dir']:
+            print(f"  数据集目录: {config['dataset_dir']}")
+        else:
+            print(f"  训练数据: {config['train_data']}")
+            if config['test_data']:
+                print(f"  测试数据: {config['test_data']}")
+    
+    print(f"  基础模型: {config['model_name']}")
+    if config['model_path']:
+        print(f"  模型路径: {config['model_path']}")
+    
+    if config['mode'] == 'train':
+        print(f"  训练轮数: {config['num_epochs']}")
+        print(f"  测试集比例: {config['test_ratio']}")
+        print(f"  设备: {config['device']}")
+    
+    print(f"  输出目录: {config['output_dir']}")
+    
+    if config['mode'] in ('train', 'convert'):
+        print(f"  Ollama 名称: {config['ollama_name']}")
+    
+    if config['mode'] == 'evaluate':
+        print(f"  Adapter 路径: {config['adapter_path']}")
+    
+    print("=" * 50)
+    
+    mode_text = "开始" if config['mode'] == 'train' else "继续"
+    if not input_yes_no(f"确认{mode_text}?", default=True):
+        print("\n已取消")
+        return
+    
+    # 执行
+    print("\n\n" + "=" * 50)
+    print("  开始执行")
+    print("=" * 50)
+    
+    Path(config['output_dir']).mkdir(parents=True, exist_ok=True)
     generator = DataGenerator()
-    import random
-
-    all_qa = generator.generate_from_documents(docs)
-    random.shuffle(all_qa)
-    test_size = int(len(all_qa) * test_ratio)
-    train_qa = all_qa[test_size:]
-    test_qa = all_qa[:test_size]
+    
+    if config['mode'] == 'evaluate':
+        # 仅评估模式
+        adapter_path = input_text("Adapter 路径", default='./output/adapter', required=True)
+        
+        print("\n[1/1] 评估模型...")
+        test_jsonl = Path(config['output_dir']) / "temp" / "test.jsonl"
+        
+        def get_jsonl_count(path):
+            if not path.exists():
+                return 0
+            with open(path, 'r', encoding='utf-8') as f:
+                return sum(1 for line in f if line.strip())
+        
+        test_count = get_jsonl_count(test_jsonl)
+        
+        if test_count > 0:
+            print(f"  使用 {test_count} 条测试数据进行评估...")
+        else:
+            print("  ⚠ 未找到测试数据，从数据集随机抽样20%作为评估...")
+            if config['dataset_dir']:
+                train_qa, test_qa = generator.load_dataset_dir(
+                    config['dataset_dir'], 
+                    test_ratio=0.2
+                )
+                eval_jsonl = Path(config['output_dir']) / "temp" / "eval.jsonl"
+                generator.save_to_jsonl(test_qa, str(eval_jsonl))
+                test_jsonl = eval_jsonl
+                print(f"  ✓ 随机抽取 {len(test_qa)} 条数据用于评估")
+        
+        finetune_config = FinetuneConfig(
+            model_name=config['model_name'],
+            model_path=adapter_path,
+            data_path=str(test_jsonl),
+            output_dir=config['output_dir'],
+            device=config['device'],
+        )
+        finetuner = Finetuner(finetune_config)
+        result = finetuner.evaluate(str(test_jsonl))
+        print(f"  ✓ 评估完成")
+        
+        print("\n" + "=" * 50)
+        print("  ✓ 评估完成!")
+        print("=" * 50)
+        return
+    
+    elif config['mode'] == 'convert':
+        # 仅转换模式
+        adapter_path = input_text("Adapter 路径", default='./output/adapter', required=True)
+        
+        print("\n[1/1] 转换 Ollama 模型...")
+        converter = ModelConverter(
+            base_model=config['model_path'] if config['model_path'] else config['model_name'],
+            adapter_path=adapter_path,
+            output_dir=config['output_dir'],
+        )
+        ollama_dir = converter.full_pipeline(config['ollama_name'])
+        print(f"  ✓ Ollama 模型已创建: {ollama_dir}")
+        
+        print("\n" + "=" * 50)
+        print("  ✓ 转换完成!")
+        print("=" * 50)
+        print(f"\n运行命令: ollama run {config['ollama_name']}")
+        return
+    
+    # 完整训练流程
+    train_jsonl = Path(config['output_dir']) / "temp" / "train.jsonl"
+    test_jsonl = Path(config['output_dir']) / "temp" / "test.jsonl"
+    train_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 加载数据集
+    print("\n[1/4] 加载数据集...")
+    
+    if config['dataset_dir']:
+        train_qa, test_qa = generator.load_dataset_dir(
+            config['dataset_dir'], 
+            test_ratio=config['test_ratio']
+        )
+    else:
+        train_qa = generator.load_from_jsonl(config['train_data'])
+        if config['test_data']:
+            test_qa = generator.load_from_jsonl(config['test_data'])
+        else:
+            test_qa = []
+            if config['test_ratio'] > 0 and train_qa:
+                import random
+                random.shuffle(train_qa)
+                test_size = int(len(train_qa) * config['test_ratio'])
+                test_qa = train_qa[:test_size]
+                train_qa = train_qa[test_size:]
+    
     generator.save_to_jsonl(train_qa, str(train_jsonl))
     generator.save_to_jsonl(test_qa, str(test_jsonl))
-    click.echo(f"  -> 训练集: {len(train_qa)} 条, 测试集: {len(test_qa)} 条")
-
-    click.echo("\n[3/6] 执行微调...")
-    config = FinetuneConfig(
-        model_name=model_name,
-        model_path=model_path,
+    print(f"  ✓ 训练集: {len(train_qa)} 条, 测试集: {len(test_qa)} 条")
+    
+    # 执行微调
+    print("\n[2/4] 执行微调...")
+    finetune_config = FinetuneConfig(
+        model_name=config['model_name'],
+        model_path=config['model_path'] or None,
         data_path=str(train_jsonl),
-        output_dir=output_dir,
-        num_epochs=num_epochs,
-        device=device,
+        output_dir=config['output_dir'],
+        num_epochs=config['num_epochs'],
+        device=config['device'],
     )
-    finetuner = Finetuner(config)
+    
+    finetuner = Finetuner(finetune_config)
     finetuner.prepare_data()
     finetuner.train()
-    click.echo(f"  -> 微调完成: {finetuner.get_adapter_path()}")
-
-    click.echo("\n[4/6] 评估模型...")
-    result = finetuner.evaluate(str(test_jsonl))
-    click.echo(f"  -> 评估完成")
-
-    click.echo("\n[5/6] 转换Ollama模型...")
+    print(f"  ✓ 微调完成: {finetuner.get_adapter_path()}")
+    
+    # 评估模型
+    print("\n[3/4] 评估模型...")
+    
+    def get_jsonl_count(path):
+        if not path.exists():
+            return 0
+        with open(path, 'r', encoding='utf-8') as f:
+            return sum(1 for line in f if line.strip())
+    
+    test_count = get_jsonl_count(test_jsonl)
+    
+    if test_count > 0:
+        print(f"  使用 {test_count} 条测试数据进行评估...")
+        result = finetuner.evaluate(str(test_jsonl))
+        print(f"  ✓ 评估完成")
+    else:
+        print("  ⚠ 测试集为空，从训练集随机抽样20%进行评估...")
+        import random
+        eval_size = max(1, int(len(train_qa) * 0.2))
+        all_train = list(train_qa)
+        random.shuffle(all_train)
+        eval_data = all_train[:eval_size]
+        eval_jsonl = Path(config['output_dir']) / "temp" / "eval.jsonl"
+        generator.save_to_jsonl(eval_data, str(eval_jsonl))
+        result = finetuner.evaluate(str(eval_jsonl))
+        print(f"  ✓ 随机评估完成 (样本数: {len(eval_data)})")
+    
+    # 转换模型
+    print("\n[4/4] 转换 Ollama 模型...")
     converter = ModelConverter(
-        base_model=model_path if model_path else model_name,
+        base_model=config['model_path'] if config['model_path'] else config['model_name'],
         adapter_path=finetuner.get_adapter_path(),
-        output_dir=output_dir,
+        output_dir=config['output_dir'],
     )
-    ollama_dir = converter.full_pipeline(model_name_ollama)
-    click.echo(f"  -> 转换完成: {ollama_dir}")
-
-    click.echo("\n[6/6] 清理临时文件...")
-    if Path("output/temp").exists():
+    ollama_dir = converter.full_pipeline(config['ollama_name'])
+    print(f"  ✓ Ollama 模型已创建: {ollama_dir}")
+    
+    print("\n" + "=" * 50)
+    print("  ✓ 全部完成!")
+    print("=" * 50)
+    print(f"\n运行命令: ollama run {config['ollama_name']}")
+    
+    if input_yes_no("\n是否清理临时文件?", default=False):
         import shutil
-
-        for f in ["docs.json", "train.jsonl", "test.jsonl", "train.py", "evaluate.py"]:
-            p = Path("output/temp") / f
-            if p.exists():
-                p.unlink()
-        if (Path("output/temp") / "data").exists():
-            shutil.rmtree(Path("output/temp") / "data")
-        if (Path("output/temp") / "__pycache__").exists():
-            shutil.rmtree(Path("output/temp") / "__pycache__")
-    click.echo("  -> 清理完成")
-
-    click.echo("\n=== 完成 ===")
-    click.echo(f"运行: ollama run {model_name_ollama}")
+        if Path("output/temp").exists():
+            shutil.rmtree("output/temp")
+            print("  ✓ 已清理")
 
 
 if __name__ == "__main__":
-    cli()
+    main()

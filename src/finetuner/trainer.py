@@ -17,7 +17,7 @@ class FinetuneConfig:
     """微调配置"""
 
     model_name: str = "Qwen2.5-0.5B"
-    model_path: str = None
+    model_path: Optional[str] = None
     data_path: str = "./output/temp/train.jsonl"
     output_dir: str = "./output"
     max_length: int = 2048
@@ -234,7 +234,7 @@ if __name__ == "__main__":
         """获取适配器路径"""
         return str(Path(self.config.output_dir) / "adapter")
 
-    def evaluate(self, data_path: str = None, use_base_model: bool = False) -> dict:
+    def evaluate(self, data_path: Optional[str] = None, use_base_model: bool = False) -> dict:
         """评估模型"""
         import json
 
@@ -393,8 +393,9 @@ print("\\n[INFO] 评估完成!")
             text=True,
             bufsize=1,
         )
-        for line in process.stdout:
-            print(line, end="")
+        if process.stdout:
+            for line in process.stdout:
+                print(line, end="")
         process.wait()
         if process.returncode != 0:
             print(f"评估失败")
