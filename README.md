@@ -90,7 +90,7 @@ uv run main.py clean
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--doc-dir` | `./train_docs` | 文档目录 |
-| `--model` | `Qwen2.5-0.5B` | 模型名称 |
+| `--model` | `qwen3:0.6b` | 模型名称 |
 | `--name` | `mymodel` | Ollama模型名称 |
 | `--epochs` | `3` | 训练轮数 |
 | `--test-ratio` | `0.2` | 测试集比例 |
@@ -98,9 +98,25 @@ uv run main.py clean
 
 ## 模型支持
 
-- Qwen2.5-0.5B (推荐，CPU友好)
-- Qwen2.5-1.8B
-- Qwen2.5-7B
+- **qwen3:0.6b** (默认，当前仅支持小模型)
+
+## 设备配置
+
+| 设备 | max_length | 说明 |
+|------|------------|------|
+| CUDA (GPU) | 2048 | 推荐使用GPU加速 |
+| CPU | 512 | 最小内存配置 |
+
+## Ollama 参数
+
+转换后的模型默认使用以下参数（适合报告审核场景）：
+
+```dockerfile
+PARAMETER temperature 0.1   # 低温度，稳定准确
+PARAMETER top_p 0.8
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.1
+```
 
 ## 目录结构
 

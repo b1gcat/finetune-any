@@ -182,10 +182,26 @@ ollama                       # Ollama CLI
 
 | 模型 | 参数量 | 说明 |
 |-----|-------|-----|
-| Qwen2.5-0.5B | 0.5B | 最小，推荐测试用 |
-| Qwen2.5-1.8B | 1.8B | 中等大小 |
-| Qwen2.5-7B | 7B | 较大，效果更好 |
+| qwen3:0.6b | 0.6B | 当前仅支持小模型 |
 | 本地模型 | - | 支持加载本地路径 |
+
+## 8.1 设备配置
+
+| 设备 | max_length | 说明 |
+|------|------------|------|
+| CUDA (GPU) | 2048 | 推荐使用GPU加速 |
+| CPU | 512 | 最小内存配置 |
+
+## 8.2 Ollama 默认参数
+
+转换后的模型使用以下参数（适合报告审核场景）：
+
+```dockerfile
+PARAMETER temperature 0.1   # 低温度，稳定准确
+PARAMETER top_p 0.8
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.1
+```
 
 ## 9. 错误处理
 

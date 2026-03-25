@@ -6,8 +6,12 @@ import sys
 from pathlib import Path
 
 from src.data_gen.generator import DataGenerator
-from src.finetuner.trainer import Finetuner, FinetuneConfig
+from src.finetuner.trainer import Finetuner, FinetuneConfig, FinetuneConfig as TrainerConfig
 from src.converter.converter import ModelConverter
+
+MODEL_NAME_MAP = {
+    "qwen3:0.6b": "Qwen/Qwen3-0.6B",
+}
 
 
 def print_banner():
@@ -162,25 +166,23 @@ def main():
     # 步骤 2: 选择模型
     print_step(2, 5, "选择基础模型")
     
+    model_names = list(MODEL_NAME_MAP.keys())
     print("\n请选择基础模型:")
-    print("  1. Qwen2.5-0.5B (最小，最快，适合测试)")
-    print("  2. Qwen2.5-1.8B (中等大小)")
-    print("  3. Qwen2.5-7B (较大，效果更好)")
-    print("  4. 本地模型")
+    for i, name in enumerate(model_names, 1):
+        print(f"  {i}. {name}")
     
-    model_choice = input("\n请选择 (1-4): ").strip()
+    model_choice = input(f"\n请选择 (1-{len(model_names)}): ").strip()
     
-    if model_choice == "1":
-        config['model_name'] = "Qwen2.5-0.5B"
-    elif model_choice == "2":
-        config['model_name'] = "Qwen2.5-1.8B"
-    elif model_choice == "3":
-        config['model_name'] = "Qwen2.5-7B"
-    elif model_choice == "4":
-        config['model_path'] = input_text("请输入本地模型路径", required=True)
-        config['model_name'] = "local"
-    else:
-        config['model_name'] = "Qwen2.5-0.5B"
+    try:
+        idx = int(model_choice) - 1
+        if 0 <= idx < len(model_names):
+            config['model_name'] = model_names[idx]
+        else:
+            config['model_name'] = model_names[0]
+    except ValueError:
+        config['model_name'] = model_names[0]
+    
+    print(f"  已选择: {config['model_name']}")
     
     # 步骤 3: 训练参数
     print_step(3, 5, "设置训练参数")
@@ -199,9 +201,10 @@ def main():
     
     print("\n设备选择:")
     print("  1. CUDA (GPU)")
-    print("  2. CPU")
+    print("  2. CPU (最小配置: max_length=512)")
     device_choice = input("请选择 (1-2) [默认: 1]: ").strip()
     config['device'] = 'cuda' if device_choice != "2" else 'cpu'
+    config['max_length'] = 512 if config['device'] == 'cpu' else 2048
     
     # 步骤 4: 输出设置
     print_step(4, 5, "设置输出")
@@ -298,6 +301,7 @@ def main():
             data_path=str(test_jsonl),
             output_dir=config['output_dir'],
             device=config['device'],
+            max_length=config.get('max_length', 512),
         )
         finetuner = Finetuner(finetune_config)
         result = finetuner.evaluate(str(test_jsonl))
@@ -317,6 +321,7 @@ def main():
             base_model=config['model_path'] if config['model_path'] else config['model_name'],
             adapter_path=adapter_path,
             output_dir=config['output_dir'],
+            device=config['device'],
         )
         ollama_dir = converter.full_pipeline(config['ollama_name'])
         print(f"  ✓ Ollama 模型已创建: {ollama_dir}")
@@ -366,6 +371,7 @@ def main():
         output_dir=config['output_dir'],
         num_epochs=config['num_epochs'],
         device=config['device'],
+        max_length=config.get('max_length', 512),
     )
     
     finetuner = Finetuner(finetune_config)
@@ -406,6 +412,7 @@ def main():
         base_model=config['model_path'] if config['model_path'] else config['model_name'],
         adapter_path=finetuner.get_adapter_path(),
         output_dir=config['output_dir'],
+        device=config['device'],
     )
     ollama_dir = converter.full_pipeline(config['ollama_name'])
     print(f"  ✓ Ollama 模型已创建: {ollama_dir}")

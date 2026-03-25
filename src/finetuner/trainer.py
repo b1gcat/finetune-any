@@ -16,11 +16,11 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 class FinetuneConfig:
     """微调配置"""
 
-    model_name: str = "Qwen2.5-0.5B"
+    model_name: str = "qwen3:0.6b"
     model_path: Optional[str] = None
     data_path: str = "./output/temp/train.jsonl"
     output_dir: str = "./output"
-    max_length: int = 2048
+    max_length: int = 512
     batch_size: int = 1
     learning_rate: float = 2e-4
     num_epochs: int = 3
@@ -51,9 +51,7 @@ class Finetuner:
     """微调管理器"""
 
     SUPPORTED_MODELS = {
-        "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
-        "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
-        "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
+        "qwen3:0.6b": "Qwen/Qwen3-0.6B",
     }
 
     def __init__(self, config: FinetuneConfig):
@@ -108,6 +106,8 @@ class Finetuner:
             str(self.config.learning_rate),
             "--max_length",
             str(self.config.max_length),
+            "--device",
+            self.config.device,
         ]
         if self.config.model_path:
             cmd.extend(["--model_path", self.config.model_path])
@@ -152,18 +152,18 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--learning_rate", type=float, default=2e-4)
-    parser.add_argument("--max_length", type=int, default=2048)
+    parser.add_argument("--max_length", type=int, default=512)
+    parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"使用设备: {device}")
+    device = args.device
+    device_map = "auto" if device == "cuda" else "cpu"
+    print(f"使用设备: {device}, device_map: {device_map}")
 
     torch_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
     model_name_map = {
-        "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
-        "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
-        "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
+        "qwen3:0.6b": "Qwen/Qwen3-0.6B",
     }
     model_id = model_name_map.get(args.model_name, args.model_name)
     
@@ -180,7 +180,7 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        device_map="auto",
+        device_map=device_map,
         torch_dtype=torch_dtype,
         trust_remote_code=True
     )
@@ -246,9 +246,7 @@ if __name__ == "__main__":
 
         if use_base_model:
             model_name_map = {
-                "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
-                "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
-                "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
+                "qwen3:0.6b": "Qwen/Qwen3-0.6B",
             }
             base_model_id = model_name_map.get(
                 self.config.model_name, self.config.model_name
@@ -278,11 +276,9 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
 
-device_map = "{self.config.device}"
-if device_map == "gpu":
-    device_map = "cuda"
-device = device_map
-print(f"[INFO] 使用设备: {{device}}")
+device = "{self.config.device}"
+device_map = "auto" if device == "cuda" else "cpu"
+print(f"[INFO] 使用设备: {{device}}, device_map: {{device_map}}")
 
 if device == "cpu":
     torch.set_num_threads(os.cpu_count() or 4)

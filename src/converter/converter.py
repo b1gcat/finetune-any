@@ -7,17 +7,22 @@ from typing import Optional
 class ModelConverter:
     """模型转换器"""
 
-    def __init__(self, base_model: str, adapter_path: str, output_dir: str = "./output"):
+    def __init__(self, base_model: str, adapter_path: str, output_dir: str = "./output", device: str = "cuda"):
         self.base_model = base_model
         self.adapter_path = Path(adapter_path)
         self.output_dir = Path(output_dir)
         self.merged_dir = self.output_dir / "merged"
+        self.device = device
 
     def merge_adapter(self) -> str:
         """合并LoRA适配器到基础模型"""
         print("合并LoRA适配器到基础模型...")
 
         self.merged_dir.mkdir(parents=True, exist_ok=True)
+
+        device = "{self.device}"
+        device_map = "auto" if device == "cuda" else "cpu"
+        torch_dtype = "torch.bfloat16" if device == "cuda" else "torch.float32"
 
         merge_script = self.output_dir / "merge.py"
         merge_script.write_text(f'''#!/usr/bin/env python3
@@ -27,6 +32,11 @@ os.environ["HF_ENDPOINT"] = "https://modelscope.cn"
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
+
+device = "{device}"
+device_map = "auto" if device == "cuda" else "cpu"
+torch_dtype = {torch_dtype}
+print(f"使用设备: {{device}}, device_map: {{device_map}}")
 
 adapter_path = "{self.adapter_path}"
 output_path = "{self.merged_dir}"
@@ -38,9 +48,7 @@ if adapter_config.exists():
     from peft import PeftModel
     
     model_name_map = {{
-        "Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
-        "Qwen2.5-1.8B": "Qwen/Qwen2.5-1.8B",
-        "Qwen2.5-7B": "Qwen/Qwen2.5-7B",
+        "qwen3:0.6b": "Qwen/Qwen3-0.6B",
     }}
     base_model_id = model_name_map.get("{self.base_model}", "{self.base_model}")
     print(f"从ModelScope下载基础模型: {{base_model_id}}")
@@ -48,7 +56,7 @@ if adapter_config.exists():
     
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_path, device_map="cpu", torch_dtype=torch.float32, trust_remote_code=True
+        model_path, device_map=device_map, torch_dtype=torch_dtype, trust_remote_code=True
     )
     print(f"加载LoRA适配器: {{adapter_path}}")
     model = PeftModel.from_pretrained(base_model, str(adapter_path))
@@ -59,7 +67,7 @@ else:
     model_path = Path(adapter_path)
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, device_map="cpu", torch_dtype=torch.float32, trust_remote_code=True
+        model_path, device_map=device_map, torch_dtype=torch_dtype, trust_remote_code=True
     )
 
 print(f"保存模型到: {{output_path}}")
@@ -70,41 +78,19 @@ import subprocess
 size = subprocess.check_output(["du", "-sh", output_path]).decode().split()[0]
 print(f"模型大小: {{size}}")
 print("完成!")
-''')
+'''
 
-        subprocess.run(["python", str(merge_script)], check=True)
-        return str(self.merged_dir)
+        return self.create_ollama_model(model_name)
 
-    def export_to_gguf(self, output_path: Optional[str] = None) -> str:
-        """导出为GGUF格式"""
-        if output_path is None:
-            output_path = self.output_dir / "model.gguf"
-        else:
-            output_path = Path(output_path)
+    def create_ollama_model(self, model_name: str) -> str:
+        """创建 Ollama 模型"""
+        ollama_dir = self.merged_dir
 
-        print(f"导出GGUF格式: {output_path}")
-        print("提示: 请使用llama.cpp工具进行量化转换")
-
-        return str(output_path)
-
-    def create_ollama_model(self, model_name: str, quantize: str = "q4_0") -> str:
-        """创建Ollama模型"""
-        ollama_dir = self.output_dir / "ollama" / model_name
-        ollama_dir.mkdir(parents=True, exist_ok=True)
-
-        model_path = self.merged_dir
-
-        modelfile_content = f'''FROM {model_path}
-TEMPLATE """{{{{ if .System }}}}
-{{{{ .System }}}}
-{{{{ end }}}}
-{{{{ if .Prompt }}}}
-{{{{ .Prompt }}}}
-{{{{ end }}}}
-"""
-PARAMETER temperature 0.7
-PARAMETER top_p 0.9
-PARAMETER num_ctx 2048
+        modelfile_content = f'''FROM ./merged
+PARAMETER temperature 0.1
+PARAMETER top_p 0.8
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.1
 '''
 
         modelfile_path = ollama_dir / "Modelfile"
@@ -129,5 +115,4 @@ PARAMETER num_ctx 2048
     def full_pipeline(self, model_name: str) -> str:
         """完整转换流程"""
         self.merge_adapter()
-        ollama_dir = self.create_ollama_model(model_name)
-        return ollama_dir
+        return self.create_ollama_model(model_name)
